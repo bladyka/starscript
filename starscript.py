@@ -1,14 +1,27 @@
 import streamlit as st
+import json
+import os
+import re
 import nltk
 from nltk.corpus import wordnet as wn
-import re
+from sentence_transformers import SentenceTransformer, util
 
-# Обязательно один раз скачать базы
+# ========== Загрузка NLTK ==========
 nltk.download('wordnet')
 nltk.download('omw-1.4')
 
-# Словарь Звёздного Скрипта
-concept_dict = {
+# ========== Пути ==========
+DICT_PATH = "dynamic_dict.json"
+
+# ========== Загрузка или создание словаря ==========
+if os.path.exists(DICT_PATH):
+    with open(DICT_PATH, "r", encoding="utf-8") as f:
+        dynamic_dict = json.load(f)
+else:
+    dynamic_dict = {}
+
+# ========== Базовый словарь Звёздного Скрипта ==========
+base_concept_dict = {
     "person": "Haleya",
     "human": "Haleya",
     "emotion": "Nira",
@@ -62,8 +75,20 @@ concept_dict = {
     "shield": "Proteka"
 }
 
+# ========== Модель ==========
+@st.cache_resource(show_spinner=False)
+def load_model():
+    return SentenceTransformer('all-MiniLM-L6-v2')
+
+model = load_model()
+
+# ========== Функции ==========
+
+def save_dict():
+    with open(DICT_PATH, "w", encoding="utf-8") as f:
+        json.dump(dynamic_dict, f, ensure_ascii=False, indent=2)
+
 def split_compound(word):
-    # разбиваем camelCase и подобные на части
     parts = re.findall('[A-Z]?[a-z]+|[A-Z]+(?=[A-Z]|$)', word)
     return [p.lower() for p in parts] if parts else [word.lower()]
 
@@ -73,41 +98,55 @@ def get_concepts(word):
         return []
     concepts = set()
     for syn in synsets:
-        # собираем родовые понятия (hypernyms)
+        # Гипернимы (родовые понятия)
         for hyper in syn.hypernyms():
             lemma = hyper.lemmas()[0].name().lower()
-            if lemma in concept_dict:
+            if lemma in base_concept_dict:
                 concepts.add(lemma)
-        # также добавим саму лемму, если есть
+        # Леммы самого слова
         for lemma in syn.lemmas():
             l = lemma.name().lower()
-            if l in concept_dict:
+            if l in base_concept_dict:
                 concepts.add(l)
     return list(concepts)
 
-def translate(text):
-    words = re.findall(r'\w+', text.lower())
-    final_concepts = set()
+def generate_translation(word):
+    # Разбиваем на части
+    parts = split_compound(word)
+    found_concepts = set()
+    for part in parts:
+        concepts = get_concepts(part)
+        if concepts:
+            found_concepts.update(concepts)
+    if found_concepts:
+        # Собираем перевод из базовых концептов
+        return "-".join(sorted(base_concept_dict[c] for c in found_concepts))
+    else:
+        # Если нет концептов — просто возвращаем слово с пометкой
+        return f"[Unknown: {word}]"
 
-    for word in words:
-        parts = split_compound(word)
-        for part in parts:
-            concepts = get_concepts(part)
-            if concepts:
-                final_concepts.update(concepts)
+def translate(word):
+    word_lower = word.lower()
+    if word_lower in dynamic_dict:
+        return dynamic_dict[word_lower]
+    else:
+        translation = generate_translation(word_lower)
+        dynamic_dict[word_lower] = translation
+        save_dict()
+        return translation
 
-    if not final_concepts:
-        return "Unknown"
+# ========== Streamlit UI ==========
 
-    # Собираем перевод из концептов, сортируем для стабильности
-    return "-".join(sorted(concept_dict[c] for c in final_concepts))
+st.title("Dynamic Zvezdny Script Translator 🛸")
+st.write("Type any English word or phrase. New words get logically analyzed and added to the dictionary automatically!")
 
-# Streamlit UI
-st.title("Star Script Translator 🌌")
-st.write("Enter English words, phrases or compound words, get Zvezdnyy Skript translation.")
+user_input = st.text_input("Enter English word or phrase:")
 
-input_text = st.text_input("Input:")
-
-if input_text:
-    translation = translate(input_text)
-    st.markdown(f"**Translation:** `{translation}`")
+if user_input:
+    # Разбиваем фразу на слова
+    words = re.findall(r'\w+', user_input)
+    translations = []
+    for w in words:
+        translations.append(translate(w))
+    st.markdown("### Translation:")
+    st.write(" • ".join(translations))
