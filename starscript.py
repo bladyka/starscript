@@ -2,25 +2,32 @@ import streamlit as st
 import json
 import os
 import re
-import nltk
-from nltk.corpus import wordnet as wn
 from sentence_transformers import SentenceTransformer, util
 
-# ========== Загрузка NLTK ==========
-nltk.download('wordnet')
-nltk.download('omw-1.4')
-
-# ========== Пути ==========
+# --- Пути ---
 DICT_PATH = "dynamic_dict.json"
+WORDLIST_PATH = "english_words.txt"  # загрузи сам файл с https://github.com/dwyl/english-words/blob/master/words.txt
 
-# ========== Загрузка или создание словаря ==========
+# --- Загрузка большого списка английских слов ---
+@st.cache_data(show_spinner=False)
+def load_wordlist():
+    if os.path.exists(WORDLIST_PATH):
+        with open(WORDLIST_PATH, "r", encoding="utf-8") as f:
+            return set(w.strip().lower() for w in f if w.strip())
+    else:
+        st.warning(f"Wordlist file {WORDLIST_PATH} not found. Please download it and place in the app folder.")
+        return set()
+
+english_words = load_wordlist()
+
+# --- Загрузка или создание динамического словаря ---
 if os.path.exists(DICT_PATH):
     with open(DICT_PATH, "r", encoding="utf-8") as f:
         dynamic_dict = json.load(f)
 else:
     dynamic_dict = {}
 
-# ========== Базовый словарь Звёздного Скрипта ==========
+# --- Базовый словарь концептов Звёздного Скрипта ---
 base_concept_dict = {
     "person": "Haleya",
     "human": "Haleya",
@@ -75,55 +82,38 @@ base_concept_dict = {
     "shield": "Proteka"
 }
 
-# ========== Модель ==========
+# --- Загрузка модели ---
 @st.cache_resource(show_spinner=False)
 def load_model():
     return SentenceTransformer('all-MiniLM-L6-v2')
 
 model = load_model()
 
-# ========== Функции ==========
-
+# --- Функции ---
 def save_dict():
     with open(DICT_PATH, "w", encoding="utf-8") as f:
         json.dump(dynamic_dict, f, ensure_ascii=False, indent=2)
 
-def split_compound(word):
-    parts = re.findall('[A-Z]?[a-z]+|[A-Z]+(?=[A-Z]|$)', word)
-    return [p.lower() for p in parts] if parts else [word.lower()]
-
-def get_concepts(word):
-    synsets = wn.synsets(word)
-    if not synsets:
-        return []
-    concepts = set()
-    for syn in synsets:
-        # Гипернимы (родовые понятия)
-        for hyper in syn.hypernyms():
-            lemma = hyper.lemmas()[0].name().lower()
-            if lemma in base_concept_dict:
-                concepts.add(lemma)
-        # Леммы самого слова
-        for lemma in syn.lemmas():
-            l = lemma.name().lower()
-            if l in base_concept_dict:
-                concepts.add(l)
-    return list(concepts)
+def find_closest_concept(word):
+    concepts = list(base_concept_dict.keys())
+    concept_embs = model.encode(concepts, convert_to_tensor=True)
+    word_emb = model.encode(word, convert_to_tensor=True)
+    hits = util.semantic_search(word_emb, concept_embs, top_k=1)[0]
+    if hits:
+        best_concept = concepts[hits[0]['corpus_id']]
+        return best_concept
+    return None
 
 def generate_translation(word):
-    # Разбиваем на части
-    parts = split_compound(word)
-    found_concepts = set()
-    for part in parts:
-        concepts = get_concepts(part)
-        if concepts:
-            found_concepts.update(concepts)
-    if found_concepts:
-        # Собираем перевод из базовых концептов
-        return "-".join(sorted(base_concept_dict[c] for c in found_concepts))
+    # Проверяем наличие слова в базе английских слов
+    if word not in english_words:
+        return f"[Unknown word: {word}]"
+    # Пытаемся найти самый близкий концепт
+    concept = find_closest_concept(word)
+    if concept:
+        return base_concept_dict[concept]
     else:
-        # Если нет концептов — просто возвращаем слово с пометкой
-        return f"[Unknown: {word}]"
+        return f"[No concept for: {word}]"
 
 def translate(word):
     word_lower = word.lower()
@@ -135,18 +125,14 @@ def translate(word):
         save_dict()
         return translation
 
-# ========== Streamlit UI ==========
-
-st.title("Dynamic Zvezdny Script Translator 🛸")
-st.write("Type any English word or phrase. New words get logically analyzed and added to the dictionary automatically!")
+# --- Streamlit UI ---
+st.title("Universal Zvezdny Script Translator with Big English Wordlist 🚀")
+st.write("Enter any English word. The app knows tons of words and translates logically to Zvezdny Script!")
 
 user_input = st.text_input("Enter English word or phrase:")
 
 if user_input:
-    # Разбиваем фразу на слова
     words = re.findall(r'\w+', user_input)
-    translations = []
-    for w in words:
-        translations.append(translate(w))
+    translations = [translate(w) for w in words]
     st.markdown("### Translation:")
     st.write(" • ".join(translations))
