@@ -1,113 +1,106 @@
 import streamlit as st
 import nltk
 from nltk.corpus import wordnet as wn
-import re
+import json
+import os
+import hashlib
+from starscript_dict import BASE_CONCEPTS
 
-# Обязательно один раз скачать базы
 nltk.download('wordnet')
 nltk.download('omw-1.4')
 
-# Словарь Звёздного Скрипта
-concept_dict = {
-    "person": "Haleya",
-    "human": "Haleya",
-    "emotion": "Nira",
-    "knowledge": "Etha",
-    "death": "Mor",
-    "life": "Zura",
-    "machine": "Karn",
-    "generator": "Karn",
-    "device": "Karn",
-    "movement": "Teyu",
-    "motion": "Teyu",
-    "travel": "Teyu",
-    "water": "Sel",
-    "fire": "Fyrn",
-    "air": "Aen",
-    "earth": "Terra",
-    "wood": "Darn",
-    "object": "Hal",
-    "structure": "Varn",
-    "building": "Varn",
-    "light": "Luma",
-    "dark": "Nokta",
-    "small": "Min",
-    "big": "Maxa",
-    "sound": "Sonar",
-    "color": "Tinta",
-    "energy": "Vorr",
-    "power": "Vorr",
-    "weapon": "Klyth",
-    "war": "Drav",
-    "love": "Niraleya",
-    "fear": "Noknira",
-    "animal": "Bestan",
-    "food": "Kora",
-    "plant": "Flor",
-    "metal": "Ferr",
-    "stone": "Roka",
-    "sky": "Zenn",
-    "child": "Halet",
-    "language": "Lekth",
-    "communication": "Lekth",
-    "technology": "Karth",
-    "time": "Temar",
-    "future": "Temarix",
-    "past": "Temara",
-    "space": "Vex",
-    "universe": "Omn",
-    "data": "Koda",
-    "memory": "Memn",
-    "tool": "Instr",
-    "shield": "Proteka"
-}
+DYNAMIC_DICT_PATH = "dynamic_dict.json"
 
-def split_compound(word):
-    # разбиваем camelCase и подобные на части
-    parts = re.findall('[A-Z]?[a-z]+|[A-Z]+(?=[A-Z]|$)', word)
-    return [p.lower() for p in parts] if parts else [word.lower()]
+def load_dynamic_dict():
+    if os.path.exists(DYNAMIC_DICT_PATH):
+        with open(DYNAMIC_DICT_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    else:
+        return {}
 
-def get_concepts(word):
-    synsets = wn.synsets(word)
+def save_dynamic_dict(d):
+    with open(DYNAMIC_DICT_PATH, "w", encoding="utf-8") as f:
+        json.dump(d, f, ensure_ascii=False, indent=2)
+
+dynamic_dict = load_dynamic_dict()
+
+def split_word(word):
+    parts = []
+    # Разбиваем слово на части от длины 3 символов и больше
+    for i in range(3, len(word)):
+        left = word[:i]
+        right = word[i:]
+        if wn.synsets(left):
+            parts.append(left)
+        if wn.synsets(right):
+            parts.append(right)
+    return list(set(parts)) if parts else [word]
+
+def get_concepts_from_definition(defn):
+    defn = defn.lower()
+    found = []
+    for key, val in BASE_CONCEPTS.items():
+        if key in defn:
+            found.append(val)
+    return found
+
+def translate_word(word):
+    word_lower = word.lower()
+    if word_lower in dynamic_dict:
+        return dynamic_dict[word_lower], "From dynamic dict"
+    if word_lower in BASE_CONCEPTS:
+        return BASE_CONCEPTS[word_lower], "From base concepts"
+    synsets = wn.synsets(word_lower)
     if not synsets:
-        return []
-    concepts = set()
-    for syn in synsets:
-        # собираем родовые понятия (hypernyms)
-        for hyper in syn.hypernyms():
-            lemma = hyper.lemmas()[0].name().lower()
-            if lemma in concept_dict:
-                concepts.add(lemma)
-        # также добавим саму лемму, если есть
-        for lemma in syn.lemmas():
-            l = lemma.name().lower()
-            if l in concept_dict:
-                concepts.add(l)
-    return list(concepts)
-
-def translate(text):
-    words = re.findall(r'\w+', text.lower())
-    final_concepts = set()
-
-    for word in words:
-        parts = split_compound(word)
+        # Если нет значения в WordNet, пытаемся разбить
+        parts = split_word(word_lower)
+        concepts = []
         for part in parts:
-            concepts = get_concepts(part)
-            if concepts:
-                final_concepts.update(concepts)
+            syns = wn.synsets(part)
+            if syns:
+                defn = syns[0].definition()
+                concepts.extend(get_concepts_from_definition(defn))
+        concepts = list(set(concepts))
+        if concepts:
+            translation = "-".join(sorted(concepts))
+            key_hash = hashlib.md5(word_lower.encode()).hexdigest()[:4]
+            alien_word = f"{translation}-{key_hash}"
+            dynamic_dict[word_lower] = alien_word
+            save_dynamic_dict(dynamic_dict)
+            return alien_word, f"Inferred from parts {parts}"
+        else:
+            dynamic_dict[word_lower] = "???"
+            save_dynamic_dict(dynamic_dict)
+            return "???", "No concept found"
+    else:
+        defn = synsets[0].definition()
+        concepts = get_concepts_from_definition(defn)
+        if concepts:
+            translation = "-".join(sorted(set(concepts)))
+            key_hash = hashlib.md5(word_lower.encode()).hexdigest()[:4]
+            alien_word = f"{translation}-{key_hash}"
+            dynamic_dict[word_lower] = alien_word
+            save_dynamic_dict(dynamic_dict)
+            return alien_word, f"From WordNet definition: {defn}"
+        else:
+            dynamic_dict[word_lower] = "???"
+            save_dynamic_dict(dynamic_dict)
+            return "???", "No concept matched"
 
-    if not final_concepts:
-        return "Unknown"
+st.title("🌌 Звёздный Скрипт — Универсальный Переводчик")
 
-    # Собираем перевод из концептов, сортируем для стабильности
-    return "-".join(sorted(concept_dict[c] for c in final_concepts))
+user_input = st.text_input("Введите любое английское слово или фразу:")
 
-# Streamlit UI
-st.title("Star Script Translator 🌌")
-st.write("Enter English words, phrases or compound words, get Zvezdnyy Skript translation.")
-
-input_text = st.text_input("Input:")
-
-if input_text:
-    translation = translate(input_text)
-    st.markdown(f"**Translation:** `{translation}`")
+if user_input:
+    words = user_input.strip().split()
+    translations = []
+    explanations = []
+    for w in words:
+        tr, expl = translate_word(w)
+        translations.append(tr)
+        explanations.append(f"**{w}** → {tr} ({expl})")
+    st.subheader("Перевод:")
+    st.write(" ".join(translations))
+    st.subheader("Логика перевода:")
+    for e in explanations:
+        st.markdown(e)
