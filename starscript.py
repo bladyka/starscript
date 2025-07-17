@@ -1,14 +1,47 @@
 import streamlit as st
-import nltk
-from nltk.corpus import wordnet as wn
+from sentence_transformers import SentenceTransformer, util
 import json
 import os
 import hashlib
-from starscript_dict import BASE_CONCEPTS
 
-nltk.download('wordnet')
-nltk.download('omw-1.4')
+# Загрузка модели для семантического поиска
+model = SentenceTransformer('all-MiniLM-L6-v2')
 
+BASE_CONCEPTS = {
+    "water": "sel",
+    "fire": "ver",
+    "earth": "tur",
+    "wind": "kai",
+    "movement": "nol",
+    "light": "phi",
+    "darkness": "zor",
+    "object": "kal",
+    "life": "hal",
+    "death": "mir",
+    "tree": "lor",
+    "metal": "zek",
+    "sky": "tha",
+    "sound": "rak",
+    "energy": "ven",
+    "emotion": "lii",
+    "structure": "bal",
+    "technology": "syn",
+    "knowledge": "mek",
+    "heat": "zor",
+    "space": "qel",
+    "body": "kor",
+    "limb": "dra",
+    "mother": "hala",
+    "sun": "suur",
+    "engine": "syn-nol-ven",
+    "leg": "kor-dra",
+    "human": "haleya",
+    "love": "lii-hal",
+    "boat": "kal-nol-sel-lor",
+    "star": "suur"
+}
+
+# Кэш переводов
 DYNAMIC_DICT_PATH = "dynamic_dict.json"
 
 def load_dynamic_dict():
@@ -24,83 +57,58 @@ def save_dynamic_dict(d):
 
 dynamic_dict = load_dynamic_dict()
 
-def split_word(word):
-    parts = []
-    # Разбиваем слово на части от длины 3 символов и больше
-    for i in range(3, len(word)):
-        left = word[:i]
-        right = word[i:]
-        if wn.synsets(left):
-            parts.append(left)
-        if wn.synsets(right):
-            parts.append(right)
-    return list(set(parts)) if parts else [word]
+# Подготавливаем базу для поиска
+base_phrases = list(BASE_CONCEPTS.keys())
+base_embeddings = model.encode(base_phrases, convert_to_tensor=True)
 
-def get_concepts_from_definition(defn):
-    defn = defn.lower()
-    found = []
-    for key, val in BASE_CONCEPTS.items():
-        if key in defn:
-            found.append(val)
-    return found
-
-def translate_word(word):
+def semantic_translate(word):
     word_lower = word.lower()
     if word_lower in dynamic_dict:
-        return dynamic_dict[word_lower], "From dynamic dict"
-    if word_lower in BASE_CONCEPTS:
-        return BASE_CONCEPTS[word_lower], "From base concepts"
-    synsets = wn.synsets(word_lower)
-    if not synsets:
-        # Если нет значения в WordNet, пытаемся разбить
-        parts = split_word(word_lower)
-        concepts = []
-        for part in parts:
-            syns = wn.synsets(part)
-            if syns:
-                defn = syns[0].definition()
-                concepts.extend(get_concepts_from_definition(defn))
-        concepts = list(set(concepts))
-        if concepts:
-            translation = "-".join(sorted(concepts))
-            key_hash = hashlib.md5(word_lower.encode()).hexdigest()[:4]
-            alien_word = f"{translation}-{key_hash}"
-            dynamic_dict[word_lower] = alien_word
-            save_dynamic_dict(dynamic_dict)
-            return alien_word, f"Inferred from parts {parts}"
-        else:
-            dynamic_dict[word_lower] = "???"
-            save_dynamic_dict(dynamic_dict)
-            return "???", "No concept found"
-    else:
-        defn = synsets[0].definition()
-        concepts = get_concepts_from_definition(defn)
-        if concepts:
-            translation = "-".join(sorted(set(concepts)))
-            key_hash = hashlib.md5(word_lower.encode()).hexdigest()[:4]
-            alien_word = f"{translation}-{key_hash}"
-            dynamic_dict[word_lower] = alien_word
-            save_dynamic_dict(dynamic_dict)
-            return alien_word, f"From WordNet definition: {defn}"
-        else:
-            dynamic_dict[word_lower] = "???"
-            save_dynamic_dict(dynamic_dict)
-            return "???", "No concept matched"
+        return dynamic_dict[word_lower], "Cached translation"
 
-st.title("🌌 Звёздный Скрипт — Универсальный Переводчик")
+    # Семантический поиск по базе концептов
+    query_emb = model.encode(word_lower, convert_to_tensor=True)
+    hits = util.semantic_search(query_emb, base_embeddings, top_k=3)[0]
 
-user_input = st.text_input("Введите любое английское слово или фразу:")
+    # Собираем перевод из лучших совпадений, если они достаточно близки
+    threshold = 0.5
+    parts = []
+    explanation = []
+    for hit in hits:
+        if hit['score'] >= threshold:
+            concept = base_phrases[hit['corpus_id']]
+            parts.append(BASE_CONCEPTS[concept])
+            explanation.append(f"{concept} ({hit['score']:.2f})")
 
-if user_input:
-    words = user_input.strip().split()
+    if not parts:
+        # Если нет похожих — создаём хеш и ставим знак вопроса
+        hash_key = hashlib.md5(word_lower.encode()).hexdigest()[:4]
+        alien_word = f"???-{hash_key}"
+        dynamic_dict[word_lower] = alien_word
+        save_dynamic_dict(dynamic_dict)
+        return alien_word, "No similar concepts found"
+
+    # Собираем перевод и сохраняем
+    alien_word = "-".join(sorted(set(parts)))
+    dynamic_dict[word_lower] = alien_word
+    save_dynamic_dict(dynamic_dict)
+    return alien_word, " + ".join(explanation)
+
+# Streamlit UI
+st.title("🌌 Zvezdniy Skript Ultimate Translator")
+input_text = st.text_input("Enter any English word or phrase:")
+
+if input_text:
+    words = input_text.strip().split()
     translations = []
     explanations = []
     for w in words:
-        tr, expl = translate_word(w)
+        tr, expl = semantic_translate(w)
         translations.append(tr)
         explanations.append(f"**{w}** → {tr} ({expl})")
-    st.subheader("Перевод:")
+
+    st.subheader("Translation:")
     st.write(" ".join(translations))
-    st.subheader("Логика перевода:")
-    for e in explanations:
-        st.markdown(e)
+
+    st.subheader("Explanation:")
+    st.markdown("\n\n".join(explanations))
